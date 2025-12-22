@@ -322,3 +322,5 @@ Sử dụng **YOLOv8** để phát hiện vùng khuôn mặt và xác định v�
 - Fallback: nếu không detect được, sử dụng tọa độ cố định
 
 ---
+
+
