@@ -1,0 +1,416 @@
+% =============================================================================
+% Model Architecture and Training Section - ImprovedPremiumGAN
+% Face Reconstruction Under Mask
+% =============================================================================
+
+\section{Model Architecture and Training}
+\label{sec:model_architecture}
+
+This section provides a comprehensive description of the neural network architecture and training methodology employed in our face reconstruction system. The model follows the Generative Adversarial Network (GAN) paradigm, consisting of a Generator network based on the U-Net architecture and a Discriminator network utilizing the PatchGAN design.
+
+% =============================================================================
+\subsection{Generator Network Architecture}
+\label{subsec:generator}
+
+The Generator network $G$ is responsible for reconstructing the masked portion of face images. It employs a U-Net encoder-decoder architecture with skip connections, which has proven highly effective for image-to-image translation tasks. The Generator accepts a masked input image $\mathbf{x} \in \mathbb{R}^{3 \times 128 \times 128}$ and produces a reconstructed output image $\hat{\mathbf{y}} \in \mathbb{R}^{3 \times 128 \times 128}$:
+
+\begin{equation}
+\hat{\mathbf{y}} = G(\mathbf{x}; \theta_G)
+\label{eq:generator_mapping}
+\end{equation}
+
+where $\theta_G$ represents the learnable parameters of the Generator.
+
+\subsubsection{DoubleConv Block}
+
+The fundamental building block of the Generator is the DoubleConv module, which applies two consecutive convolution operations with batch normalization and ReLU activation. Given an input feature map $\mathbf{F}_{in} \in \mathbb{R}^{C_{in} \times H \times W}$, the DoubleConv block produces output $\mathbf{F}_{out} \in \mathbb{R}^{C_{out} \times H \times W}$ through the following operations:
+
+\begin{equation}
+\mathbf{F}_1 = \text{ReLU}(\text{BN}(\mathbf{W}_1 * \mathbf{F}_{in} + \mathbf{b}_1))
+\label{eq:doubleconv_1}
+\end{equation}
+
+\begin{equation}
+\mathbf{F}_{out} = \text{ReLU}(\text{BN}(\mathbf{W}_2 * \mathbf{F}_1 + \mathbf{b}_2))
+\label{eq:doubleconv_2}
+\end{equation}
+
+where $\mathbf{W}_1 \in \mathbb{R}^{C_{out} \times C_{in} \times 3 \times 3}$ and $\mathbf{W}_2 \in \mathbb{R}^{C_{out} \times C_{out} \times 3 \times 3}$ are convolutional kernels with size $3 \times 3$, the operator $*$ denotes the convolution operation with padding of 1 to preserve spatial dimensions, BN represents Batch Normalization, and ReLU is the Rectified Linear Unit activation function defined as $\text{ReLU}(z) = \max(0, z)$.
+
+\subsubsection{Encoder Path}
+
+The encoder consists of four downsampling stages that progressively reduce spatial resolution while increasing channel depth. Each encoder stage $i$ applies a DoubleConv block followed by $2 \times 2$ max pooling with stride 2. Let $\mathbf{E}_0 = \mathbf{x}$ denote the input image, the encoder operations are defined as:
+
+\begin{equation}
+\mathbf{S}_i = \text{DoubleConv}_i(\mathbf{E}_{i-1}), \quad i \in \{1, 2, 3, 4\}
+\label{eq:encoder_doubleconv}
+\end{equation}
+
+\begin{equation}
+\mathbf{E}_i = \text{MaxPool}_{2 \times 2}(\mathbf{S}_i), \quad i \in \{1, 2, 3, 4\}
+\label{eq:encoder_pool}
+\end{equation}
+
+where $\mathbf{S}_i$ represents the skip connection features that will be passed to the corresponding decoder stage. The encoder layer specifications are detailed as follows. The first encoder stage (Down 1) receives input with 3 channels and spatial dimensions $128 \times 128$, applies DoubleConv to produce 64 channels, and after max pooling outputs feature maps of size $64 \times 64 \times 64$. The second encoder stage (Down 2) transforms from 64 to 128 channels, reducing spatial dimensions to $32 \times 32$. The third encoder stage (Down 3) transforms from 128 to 256 channels with output dimensions $16 \times 16$. The fourth encoder stage (Down 4) transforms from 256 to 512 channels with output dimensions $8 \times 8$.
+
+\subsubsection{Bottleneck}
+
+The bottleneck layer operates at the lowest spatial resolution and highest channel depth, serving as the bridge between encoder and decoder. It applies a DoubleConv block to the encoder output:
+
+\begin{equation}
+\mathbf{B} = \text{DoubleConv}_{bottleneck}(\mathbf{E}_4): \mathbb{R}^{512 \times 8 \times 8} \rightarrow \mathbb{R}^{1024 \times 8 \times 8}
+\label{eq:bottleneck}
+\end{equation}
+
+The bottleneck captures the most abstract, high-level semantic representations essential for understanding global facial structure.
+
+\subsubsection{Decoder Path}
+
+The decoder consists of four upsampling stages that progressively increase spatial resolution while decreasing channel depth. Each decoder stage applies transposed convolution for upsampling, concatenates with the corresponding skip connection, and applies a DoubleConv block for feature refinement. Let $\mathbf{D}_0 = \mathbf{B}$ denote the bottleneck output, the decoder operations are:
+
+\begin{equation}
+\mathbf{U}_i = \text{ConvTranspose2d}_{2 \times 2, s=2}(\mathbf{D}_{i-1}), \quad i \in \{1, 2, 3, 4\}
+\label{eq:decoder_upsample}
+\end{equation}
+
+\begin{equation}
+\mathbf{C}_i = \text{Concat}(\mathbf{S}_{5-i}, \mathbf{U}_i)
+\label{eq:decoder_concat}
+\end{equation}
+
+\begin{equation}
+\mathbf{D}_i = \text{DoubleConv}_i(\mathbf{C}_i), \quad i \in \{1, 2, 3, 4\}
+\label{eq:decoder_doubleconv}
+\end{equation}
+
+The transposed convolution operation with kernel size 2 and stride 2 doubles the spatial dimensions. The concatenation operation combines skip connection features with upsampled features along the channel dimension, effectively doubling the input channels for the subsequent DoubleConv block.
+
+The decoder layer specifications proceed as follows. The first decoder stage (Up 1) receives 1024 channels from bottleneck, upsamples to $16 \times 16$, concatenates with 512-channel skip connection to form 1536 channels, and produces 512-channel output. The second decoder stage (Up 2) upsamples to $32 \times 32$, concatenates with 256-channel skip connection to form 768 channels, producing 256-channel output. The third decoder stage (Up 3) upsamples to $64 \times 64$, concatenates with 128-channel skip connection to form 384 channels, producing 128-channel output. The fourth decoder stage (Up 4) upsamples to $128 \times 128$, concatenates with 64-channel skip connection to form 192 channels, producing 64-channel output.
+
+\subsubsection{Output Layer}
+
+The final output layer transforms the 64-channel feature map to a 3-channel RGB image using a $1 \times 1$ convolution followed by Tanh activation:
+
+\begin{equation}
+\hat{\mathbf{y}} = \tanh(\mathbf{W}_{out} * \mathbf{D}_4 + \mathbf{b}_{out}): \mathbb{R}^{64 \times 128 \times 128} \rightarrow [-1, 1]^{3 \times 128 \times 128}
+\label{eq:generator_output}
+\end{equation}
+
+where $\mathbf{W}_{out} \in \mathbb{R}^{3 \times 64 \times 1 \times 1}$ is the output convolution kernel. The Tanh activation function constrains pixel values to the range $[-1, 1]$, matching the normalized input range.
+
+% =============================================================================
+\subsection{Discriminator Network Architecture}
+\label{subsec:discriminator}
+
+The Discriminator network $D$ distinguishes between real images and generated images using the PatchGAN architecture. Unlike traditional discriminators that output a single probability value, PatchGAN produces an $N \times N$ grid of probabilities, where each element assesses the authenticity of a corresponding receptive field in the input:
+
+\begin{equation}
+\mathbf{P} = D(\mathbf{y}; \theta_D): \mathbb{R}^{3 \times 128 \times 128} \rightarrow [0, 1]^{7 \times 7}
+\label{eq:discriminator_mapping}
+\end{equation}
+
+where $\theta_D$ represents the learnable parameters of the Discriminator and each element $P_{ij}$ indicates the probability that the corresponding patch in the input is real.
+
+\subsubsection{CNNBlock Module}
+
+The fundamental building block of the Discriminator is the CNNBlock, which combines strided convolution, batch normalization, and LeakyReLU activation:
+
+\begin{equation}
+\text{CNNBlock}(\mathbf{F}) = \text{LeakyReLU}_{\alpha}(\text{BN}(\mathbf{W} * \mathbf{F} + \mathbf{b}))
+\label{eq:cnnblock}
+\end{equation}
+
+where $\mathbf{W} \in \mathbb{R}^{C_{out} \times C_{in} \times 4 \times 4}$ is a convolutional kernel with size $4 \times 4$ and stride 2, and the LeakyReLU activation is defined as:
+
+\begin{equation}
+\text{LeakyReLU}_{\alpha}(z) = \begin{cases} z & \text{if } z > 0 \\ \alpha z & \text{if } z \leq 0 \end{cases}
+\label{eq:leakyrelu}
+\end{equation}
+
+with negative slope $\alpha = 0.2$. The reflect padding mode is employed to reduce boundary artifacts.
+
+\subsubsection{Discriminator Layers}
+
+The Discriminator architecture begins with an initial convolution layer without batch normalization, following established GAN training practices. Given input image $\mathbf{y} \in \mathbb{R}^{3 \times 128 \times 128}$, the forward pass proceeds as:
+
+\begin{equation}
+\mathbf{h}_0 = \text{LeakyReLU}_{0.2}(\mathbf{W}_0 * \mathbf{y} + \mathbf{b}_0): \mathbb{R}^{3 \times 128 \times 128} \rightarrow \mathbb{R}^{64 \times 64 \times 64}
+\label{eq:disc_initial}
+\end{equation}
+
+where $\mathbf{W}_0 \in \mathbb{R}^{64 \times 3 \times 4 \times 4}$ with stride 2 and padding 1. The subsequent CNNBlock layers are:
+
+\begin{equation}
+\mathbf{h}_1 = \text{CNNBlock}_{64 \rightarrow 128}(\mathbf{h}_0): \mathbb{R}^{64 \times 64 \times 64} \rightarrow \mathbb{R}^{128 \times 32 \times 32}
+\label{eq:disc_layer1}
+\end{equation}
+
+\begin{equation}
+\mathbf{h}_2 = \text{CNNBlock}_{128 \rightarrow 256}(\mathbf{h}_1): \mathbb{R}^{128 \times 32 \times 32} \rightarrow \mathbb{R}^{256 \times 16 \times 16}
+\label{eq:disc_layer2}
+\end{equation}
+
+\begin{equation}
+\mathbf{h}_3 = \text{CNNBlock}_{256 \rightarrow 512}(\mathbf{h}_2): \mathbb{R}^{256 \times 16 \times 16} \rightarrow \mathbb{R}^{512 \times 8 \times 8}
+\label{eq:disc_layer3}
+\end{equation}
+
+The final output layer applies a $4 \times 4$ convolution with stride 1 followed by Sigmoid activation:
+
+\begin{equation}
+\mathbf{P} = \sigma(\mathbf{W}_{out} * \mathbf{h}_3 + \mathbf{b}_{out}): \mathbb{R}^{512 \times 8 \times 8} \rightarrow [0, 1]^{1 \times 7 \times 7}
+\label{eq:disc_output}
+\end{equation}
+
+where $\sigma(z) = \frac{1}{1 + e^{-z}}$ is the Sigmoid activation function and $\mathbf{W}_{out} \in \mathbb{R}^{1 \times 512 \times 4 \times 4}$.
+
+\subsubsection{Receptive Field Analysis}
+
+The effective receptive field of each output element can be computed recursively through the network layers. For a convolution layer with kernel size $k$, stride $s$, and input receptive field $r_{in}$, the output receptive field is:
+
+\begin{equation}
+r_{out} = r_{in} + (k - 1) \times \prod_{l=1}^{L-1} s_l
+\label{eq:receptive_field}
+\end{equation}
+
+For our architecture with four $4 \times 4$ convolutions with strides $[2, 2, 2, 2, 1]$, each output element has an effective receptive field of approximately $70 \times 70$ pixels.
+
+% =============================================================================
+\subsection{Weight Initialization}
+\label{subsec:weight_init}
+
+Both networks employ Gaussian weight initialization, which is critical for stable GAN training. All convolutional, transposed convolutional, and batch normalization layer weights are initialized as:
+
+\begin{equation}
+w_{ij} \sim \mathcal{N}(\mu = 0, \sigma^2 = 0.0004)
+\label{eq:weight_init}
+\end{equation}
+
+This corresponds to a standard deviation of $\sigma = 0.02$, following the DCGAN initialization protocol. The small variance prevents gradient explosion during early training iterations.
+
+% =============================================================================
+\subsection{Training Objective}
+\label{subsec:training_objective}
+
+The training process follows the adversarial paradigm where the Generator and Discriminator are trained alternately. The overall optimization problem can be formulated as a minimax game:
+
+\begin{equation}
+\min_{\theta_G} \max_{\theta_D} \mathcal{L}_{GAN}(G, D) + \lambda_{L1} \mathcal{L}_{L1}(G) + \lambda_{VGG} \mathcal{L}_{VGG}(G)
+\label{eq:minimax}
+\end{equation}
+
+% =============================================================================
+\subsection{Loss Functions}
+\label{subsec:loss_functions}
+
+The training utilizes a composite loss function consisting of three components: adversarial loss, pixel-wise reconstruction loss, and perceptual loss.
+
+\subsubsection{Adversarial Loss}
+
+The adversarial loss encourages the Generator to produce images that are indistinguishable from real images according to the Discriminator. Given input image $\mathbf{x}$, ground truth image $\mathbf{y}$, and generated image $\hat{\mathbf{y}} = G(\mathbf{x})$, the adversarial losses are defined using Binary Cross-Entropy (BCE):
+
+\begin{equation}
+\mathcal{L}_{adv}^{D} = -\frac{1}{N^2} \sum_{i,j} \left[ \log D(\mathbf{y})_{ij} + \log(1 - D(\hat{\mathbf{y}})_{ij}) \right]
+\label{eq:disc_loss}
+\end{equation}
+
+\begin{equation}
+\mathcal{L}_{adv}^{G} = -\frac{1}{N^2} \sum_{i,j} \log D(\hat{\mathbf{y}})_{ij}
+\label{eq:gen_adv_loss}
+\end{equation}
+
+where $N = 7$ is the spatial dimension of the Discriminator output grid. The Discriminator is trained to maximize the probability of correctly classifying real images as real ($D(\mathbf{y}) \rightarrow 1$) and generated images as fake ($D(\hat{\mathbf{y}}) \rightarrow 0$). The Generator is trained to minimize the probability of the Discriminator correctly identifying generated images as fake ($D(\hat{\mathbf{y}}) \rightarrow 1$).
+
+\subsubsection{L1 Reconstruction Loss}
+
+The L1 loss enforces pixel-wise similarity between the generated image and ground truth, promoting structural accuracy:
+
+\begin{equation}
+\mathcal{L}_{L1} = \frac{1}{CHW} \sum_{c=1}^{C} \sum_{i=1}^{H} \sum_{j=1}^{W} |\hat{y}_{c,i,j} - y_{c,i,j}|
+\label{eq:l1_loss}
+\end{equation}
+
+where $C = 3$ is the number of color channels, and $H = W = 128$ are the spatial dimensions. The L1 norm is preferred over L2 as it produces sharper results with less blurring.
+
+\subsubsection{VGG Perceptual Loss}
+
+The VGG perceptual loss measures similarity in the feature space of a pre-trained VGG-19 network, encouraging the generated image to match the perceptual features of the ground truth. Let $\phi_l$ denote the feature extraction function at layer $l$ of VGG-19, the perceptual loss is defined as:
+
+\begin{equation}
+\mathcal{L}_{VGG} = \sum_{l \in \mathcal{S}} \frac{1}{C_l H_l W_l} \|\phi_l(\hat{\mathbf{y}}) - \phi_l(\mathbf{y})\|_2^2
+\label{eq:vgg_loss}
+\end{equation}
+
+where $\mathcal{S} = \{\text{relu1\_1}, \text{relu2\_1}, \text{relu3\_1}, \text{relu4\_1}, \text{relu5\_1}\}$ is the set of feature extraction layers, and $C_l$, $H_l$, $W_l$ are the channel, height, and width dimensions of features at layer $l$. The VGG-19 network is pre-trained on ImageNet and its weights are frozen during training. The multi-scale feature matching captures both low-level textures (shallow layers) and high-level semantics (deep layers).
+
+\subsubsection{Total Generator Loss}
+
+The total Generator loss combines all three components with weighting coefficients:
+
+\begin{equation}
+\mathcal{L}_G = \lambda_{adv} \mathcal{L}_{adv}^{G} + \lambda_{L1} \mathcal{L}_{L1} + \lambda_{VGG} \mathcal{L}_{VGG}
+\label{eq:total_gen_loss}
+\end{equation}
+
+where the loss weights are set as $\lambda_{adv} = 1$, $\lambda_{L1} = 100$, and $\lambda_{VGG} = 10$. The high weight on L1 loss ensures structural fidelity, while the VGG loss promotes perceptual quality and the adversarial loss encourages realistic textures.
+
+\subsubsection{Total Discriminator Loss}
+
+The Discriminator loss is computed as the average of real and fake classification losses:
+
+\begin{equation}
+\mathcal{L}_D = \frac{1}{2} \left( \text{BCE}(D(\mathbf{y}), \mathbf{1}) + \text{BCE}(D(G(\mathbf{x})), \mathbf{0}) \right)
+\label{eq:total_disc_loss}
+\end{equation}
+
+where $\mathbf{1}$ and $\mathbf{0}$ are tensors of ones and zeros matching the Discriminator output dimensions, and the Binary Cross-Entropy is:
+
+\begin{equation}
+\text{BCE}(\hat{p}, p) = -\frac{1}{N^2} \sum_{i,j} \left[ p_{ij} \log(\hat{p}_{ij}) + (1 - p_{ij}) \log(1 - \hat{p}_{ij}) \right]
+\label{eq:bce}
+\end{equation}
+
+% =============================================================================
+\subsection{Optimization}
+\label{subsec:optimization}
+
+\subsubsection{Adam Optimizer}
+
+Both networks are optimized using the Adam optimizer, which combines momentum with adaptive learning rates. The parameter update rule for Adam is:
+
+\begin{equation}
+m_t = \beta_1 m_{t-1} + (1 - \beta_1) g_t
+\label{eq:adam_m}
+\end{equation}
+
+\begin{equation}
+v_t = \beta_2 v_{t-1} + (1 - \beta_2) g_t^2
+\label{eq:adam_v}
+\end{equation}
+
+\begin{equation}
+\hat{m}_t = \frac{m_t}{1 - \beta_1^t}, \quad \hat{v}_t = \frac{v_t}{1 - \beta_2^t}
+\label{eq:adam_bias_correction}
+\end{equation}
+
+\begin{equation}
+\theta_{t+1} = \theta_t - \eta \frac{\hat{m}_t}{\sqrt{\hat{v}_t} + \epsilon}
+\label{eq:adam_update}
+\end{equation}
+
+where $g_t = \nabla_\theta \mathcal{L}$ is the gradient at time step $t$, $m_t$ and $v_t$ are the first and second moment estimates, $\beta_1 = 0.5$ and $\beta_2 = 0.999$ are the exponential decay rates, $\eta = 0.0002$ is the learning rate for both networks, and $\epsilon = 10^{-8}$ is a small constant for numerical stability. The reduced $\beta_1 = 0.5$ (compared to the default 0.9) is specifically chosen for GAN training to reduce momentum and stabilize the adversarial optimization.
+
+\subsubsection{Learning Rate Scheduling}
+
+A ReduceLROnPlateau scheduler is employed to adaptively reduce the learning rate when training plateaus. The scheduler monitors the respective loss for each network and reduces the learning rate when no improvement is observed:
+
+\begin{equation}
+\eta_{t+1} = \begin{cases} \gamma \cdot \eta_t & \text{if no improvement for } p \text{ epochs} \\ \eta_t & \text{otherwise} \end{cases}
+\label{eq:lr_scheduler}
+\end{equation}
+
+where $\gamma = 0.5$ is the reduction factor and $p = 5$ is the patience parameter. This strategy allows the model to escape local minima and fine-tune during later training stages.
+
+% =============================================================================
+\subsection{Training Configuration}
+\label{subsec:training_config}
+
+The training configuration parameters are summarized in Table \ref{tab:training_config}. The model is trained on RGB images of size $128 \times 128$ pixels with a batch size of 16. The dataset is split with 90\% for training and 10\% for validation. Training proceeds for a maximum of 100 epochs with checkpoints saved at each epoch to enable resumable training.
+
+\begin{table}[htbp]
+\centering
+\caption{Training Hyperparameters and Configuration}
+\label{tab:training_config}
+\begin{tabular}{|l|c|l|}
+\hline
+\textbf{Parameter} & \textbf{Value} & \textbf{Description} \\
+\hline
+Image Size & $128 \times 128$ & Input/output spatial dimensions \\
+Batch Size & 16 & Samples per training iteration \\
+Number of Epochs & 100 & Maximum training epochs \\
+Learning Rate (G) & 0.0002 & Generator learning rate \\
+Learning Rate (D) & 0.0002 & Discriminator learning rate \\
+$\beta_1$ & 0.5 & Adam first moment decay \\
+$\beta_2$ & 0.999 & Adam second moment decay \\
+$\lambda_{L1}$ & 100 & L1 reconstruction loss weight \\
+$\lambda_{VGG}$ & 10 & VGG perceptual loss weight \\
+$\lambda_{adv}$ & 1 & Adversarial loss weight \\
+Train/Val Split & 90\%/10\% & Dataset partition ratio \\
+LR Scheduler Factor & 0.5 & Learning rate reduction factor \\
+LR Scheduler Patience & 5 & Epochs before LR reduction \\
+\hline
+\end{tabular}
+\end{table}
+
+% =============================================================================
+\subsection{Training Procedure}
+\label{subsec:training_procedure}
+
+The training procedure follows an alternating optimization scheme. At each iteration, a batch of unmasked face images is sampled and synthetic masks are applied to create input-target pairs. The training proceeds with two phases per iteration.
+
+In the first phase, the Discriminator is updated. The Generator produces fake images $\hat{\mathbf{y}} = G(\mathbf{x})$ from masked inputs. The Discriminator evaluates both real images $\mathbf{y}$ and fake images $\hat{\mathbf{y}}$ (with gradients detached to prevent Generator updates). The Discriminator loss $\mathcal{L}_D$ is computed and backpropagated, and the Discriminator parameters are updated via Adam.
+
+In the second phase, the Generator is updated. The Discriminator evaluates the fake images $\hat{\mathbf{y}}$ (this time allowing gradient flow). The composite Generator loss $\mathcal{L}_G$ is computed including adversarial, L1, and VGG components. The Generator parameters are updated via Adam while the Discriminator remains fixed.
+
+The synthetic mask generation applies a rectangular mask to the lower portion of the face, covering approximately 45\% of the image height (from 50\% to 95\%) and 70\% of the image width (from 15\% to 85\%). The masked region is filled with black pixels (value $-1$ in the normalized range $[-1, 1]$).
+
+% =============================================================================
+\subsection{Evaluation Metrics}
+\label{subsec:evaluation_metrics}
+
+Model performance is evaluated using two complementary metrics that assess reconstruction quality from different perspectives.
+
+\subsubsection{Structural Similarity Index (SSIM)}
+
+SSIM measures the perceptual similarity between two images by comparing luminance, contrast, and structural information:
+
+\begin{equation}
+\text{SSIM}(\hat{\mathbf{y}}, \mathbf{y}) = \frac{(2\mu_{\hat{y}}\mu_y + C_1)(2\sigma_{\hat{y}y} + C_2)}{(\mu_{\hat{y}}^2 + \mu_y^2 + C_1)(\sigma_{\hat{y}}^2 + \sigma_y^2 + C_2)}
+\label{eq:ssim}
+\end{equation}
+
+where $\mu_{\hat{y}}$ and $\mu_y$ are the mean pixel values, $\sigma_{\hat{y}}^2$ and $\sigma_y^2$ are the variances, $\sigma_{\hat{y}y}$ is the covariance, and $C_1 = (0.01 \times L)^2$ and $C_2 = (0.03 \times L)^2$ are stabilization constants with $L = 255$ being the dynamic range. SSIM values range from $-1$ to $1$, with $1$ indicating perfect similarity.
+
+\subsubsection{Peak Signal-to-Noise Ratio (PSNR)}
+
+PSNR quantifies reconstruction quality based on the Mean Squared Error (MSE) between generated and ground truth images:
+
+\begin{equation}
+\text{MSE} = \frac{1}{CHW} \sum_{c,i,j} (\hat{y}_{c,i,j} - y_{c,i,j})^2
+\label{eq:mse}
+\end{equation}
+
+\begin{equation}
+\text{PSNR} = 10 \cdot \log_{10}\left(\frac{L^2}{\text{MSE}}\right) = 20 \cdot \log_{10}(L) - 10 \cdot \log_{10}(\text{MSE})
+\label{eq:psnr}
+\end{equation}
+
+where $L = 255$ is the maximum pixel value. PSNR is measured in decibels (dB), with higher values indicating better reconstruction quality. Generally, PSNR values above 30 dB indicate good quality, while values above 40 dB indicate excellent quality.
+
+% =============================================================================
+\subsection{Model Summary}
+\label{subsec:model_summary}
+
+\begin{table}[htbp]
+\centering
+\caption{Complete Model Architecture Summary}
+\label{tab:model_summary}
+\begin{tabular}{|l|c|c|}
+\hline
+\textbf{Property} & \textbf{Generator} & \textbf{Discriminator} \\
+\hline
+Architecture & U-Net & PatchGAN \\
+Input Shape & $(3, 128, 128)$ & $(3, 128, 128)$ \\
+Output Shape & $(3, 128, 128)$ & $(1, 7, 7)$ \\
+Encoder Channels & $[64, 128, 256, 512]$ & -- \\
+Decoder Channels & $[512, 256, 128, 64]$ & -- \\
+Discriminator Channels & -- & $[64, 128, 256, 512]$ \\
+Bottleneck Channels & 1024 & -- \\
+Skip Connections & 4 & 0 \\
+Output Activation & Tanh & Sigmoid \\
+Hidden Activation & ReLU & LeakyReLU(0.2) \\
+Normalization & BatchNorm & BatchNorm (except layer 1) \\
+Approximate Parameters & $\sim$54.4M & $\sim$2.8M \\
+\hline
+\end{tabular}
+\end{table}
